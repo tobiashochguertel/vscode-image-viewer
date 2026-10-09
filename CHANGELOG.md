@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.0.7-fork.1] - 2026-10-09
+## [2.0.6-fork.1] - 2026-10-09
 
 Fork build by @tobiashochguertel. Includes everything in upstream `main` (which
 the marketplace ships as 2.0.6) plus the fixes below.
