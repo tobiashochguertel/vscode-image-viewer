@@ -2,9 +2,9 @@
   "name": "image-viewer",
   "publisher": "vscode-infra",
   "displayName": "Image Viewer",
-  "description": "Browse images in your project: thumbnail grid, lightbox preview, copy path or Base64. Works well for large folders (columns layout, lazy loading). Light or dark UI; scan one folder from Explorer or the whole workspace.",
+  "description": "Browse workspace images in a fast thumbnail gallery or open individual files in a full-screen custom editor. Includes sorting, filtering, zoom, themes, and large-folder tuning.",
   "icon": "assets/logo.png",
-  "version": "2.0.5-fork.1",
+  "version": "2.0.7-fork.1",
   "author": "Zhang Jian <zhangjian1713@gmail.com>",
   "homepage": "https://github.com/ZhangJian1713/vscode-image-viewer",
   "license": "MIT",
@@ -30,7 +30,9 @@
     "webp",
     "img",
     "pic",
-    "photos"
+    "photos",
+    "custom-editor",
+    "default-editor"
   ],
   "main": "./dist/extension.js",
   "webviewVendorTemplate": "antd-less",

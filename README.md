@@ -2,7 +2,7 @@
 
 View and manage images in your workspace: thumbnail grid, large preview, copy Base64 / path / file name, and per-project include/exclude folders.
 
-> **This is a fork** of [ZhangJian1713/vscode-image-viewer](https://github.com/ZhangJian1713/vscode-image-viewer) (upstream `main` @ v2.0.5), maintained by [tobiashochguertel](https://github.com/tobiashochguertel) to fix zoom bugs that upstream doesn't ship yet. See **[Fork changes](#fork-changes)** below.
+> **This is a fork** of [ZhangJian1713/vscode-image-viewer](https://github.com/ZhangJian1713/vscode-image-viewer) (upstream `main`, which the marketplace ships as v2.0.6), maintained by [tobiashochguertel](https://github.com/tobiashochguertel) to fix zoom bugs that upstream doesn't ship yet. See **[Fork changes](#fork-changes)** below.
 
 ## Fork changes
 

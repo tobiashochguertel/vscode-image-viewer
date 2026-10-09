@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.0.7-fork.1] - 2026-10-09
+
+Fork build by @tobiashochguertel. Includes everything in upstream `main` (which
+the marketplace ships as 2.0.6) plus the fixes below.
+
+### Fixed
+
+- Mouse-wheel zoom no longer jumps to 200% on images opened in Fit mode above
+  the top zoom stop (e.g. SVG diagrams upscaled to ~950%): wheel-up zoomed
+  **down** to 200% and wheel-down did nothing. Zoom now continues
+  geometrically past the top stop and steps back down onto the stop ladder.
+- Fixed an undefined zoom level when wheel-zooming after pinch zoom > 200%.
+- Pinch-in no longer snaps the zoom down when Fit exceeds the pinch clamp.
+- Toolbar zoom input and +/- buttons are no longer capped/disabled at 200%.
+
+Ships `right-image-preview` fork build
+[`v0.6.1-fork.1`](https://github.com/tobiashochguertel/right-image-preview/tree/v0.6.1-fork.1)
+(upgraded from upstream 0.2.0 to 0.6.1 + fixes).
+
+### Added (upstream 2.0.6, unpublished on GitHub)
+
+- Optional, read-only custom editor for opening individual image files directly
+  in the full-screen viewer.
+- **Image Viewer: Use as Default Image Editor** and **Restore VS Code's Default
+  Image Editor** commands for the supported image formats.
+- Dedicated single-image viewer mode that opens without scanning or briefly
+  rendering the image-library view.
+- Restore command now removes only supported-format associations that still
+  point to Image Viewer and preserves unrelated editor associations.
+- Normalized selected-image path matching across slash styles on Windows.
+
 ## [2.0.5] - 2026-04-17
 
 ### Added
