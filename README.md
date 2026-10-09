@@ -2,6 +2,52 @@
 
 View and manage images in your workspace: thumbnail grid, large preview, copy Base64 / path / file name, and per-project include/exclude folders.
 
+> **This is a fork** of [ZhangJian1713/vscode-image-viewer](https://github.com/ZhangJian1713/vscode-image-viewer) (upstream `main` @ v2.0.5), maintained by [tobiashochguertel](https://github.com/tobiashochguertel) to fix zoom bugs that upstream doesn't ship yet. See **[Fork changes](#fork-changes)** below.
+
+## Fork changes
+
+The full-screen viewer delegates zooming to the
+[`right-image-preview`](https://github.com/ZhangJian1713/right-image-preview)
+package. This fork consumes our own build of that library —
+[`tobiashochguertel/right-image-preview@v0.6.1-fork.1`](https://github.com/tobiashochguertel/right-image-preview/tree/v0.6.1-fork.1)
+— which upgrades the viewer engine from upstream `0.2.0` to `0.6.1` (plus our
+fixes) and repairs the zoom state machine:
+
+### Bugs fixed
+
+- **Wheel zoom jumped to 200% on large/diagram images.** An image opened in
+  *Fit* mode can exceed every zoom stop (e.g. an SVG diagram upscaled to ~950%
+  to fill the viewport). The first wheel-up tick then snapped the zoom **down**
+  to the 200% top stop — a zoom-in that visibly zoomed out.
+- **Wheel-down did nothing in Fit mode.** Scrolling out was a dead no-op while
+  the viewer was in fit mode.
+- **Broken zoom after pinch.** Pinch zoom allows continuous scaling up to
+  800%, but any subsequent wheel zoom hit a `stops[-1]` lookup bug and produced
+  an undefined zoom level.
+- **Pinch-in snapped down from a high fit.** Pinch clamps ignored that Fit can
+  already exceed `maxStop`, so pinching in at 950% clamped to 800%.
+- **Toolbar zoom controls capped at 200%.** Typing a value into the zoom input
+  was clamped to the top stop, and the − button was disabled in fit mode.
+
+### Behaviour changes
+
+- Zoom **in** past the top stop continues geometrically (each step = the ratio
+  of the last two stops, 200/175 ≈ 1.14) — no more dead ceiling at 200%.
+- Zoom **out** steps down from the fit-equivalent and rejoins the discrete stop
+  ladder when it crosses back below 200%.
+- `zoomInAtMaxBehaviour` now only controls the `onMaxStopReached`
+  notification; zoom-in is never blocked at the top stop.
+
+### Building this fork
+
+```bash
+yarn install
+yarn package   # or: yarn vsix  → produces the .vsix installer
+```
+
+The dependency is pinned to a git tag (`github:tobiashochguertel/right-image-preview#v0.6.1-fork.1`),
+so no private registry is needed to build.
+
 ## Screenshots
 
 ### Main panel
@@ -45,7 +91,7 @@ The default-editor commands update the global User `workbench.editorAssociations
 ## More documentation
 
 - See **[CHANGELOG.md](./CHANGELOG.md)** for release notes
-- Issues: [GitHub Issues](https://github.com/ZhangJian1713/vscode-image-viewer/issues)
+- Issues about fork changes: [this repo's Issues](https://github.com/tobiashochguertel/vscode-image-viewer/issues) — for everything else, [upstream Issues](https://github.com/ZhangJian1713/vscode-image-viewer/issues)
 
 ## Questions or feedback
 
