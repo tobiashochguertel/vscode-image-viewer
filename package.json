@@ -214,7 +214,7 @@
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
     "react-i18next": "^11.18.3",
-    "right-image-preview": "^0.2.0",
+    "right-image-preview": "github:tobiashochguertel/right-image-preview#v0.6.1-fork.1",
     "styled-components": "^5.3.0"
   },
   "resolutions": {
