@@ -1,12 +1,12 @@
 {
-  "name": "image-viewer",
-  "publisher": "vscode-infra",
-  "displayName": "Image Viewer",
+  "name": "image-viewer-fork",
+  "publisher": "TobiasHochguertel",
+  "displayName": "Image Viewer (Fork Fixes)",
   "description": "Browse workspace images in a fast thumbnail gallery or open individual files in a full-screen custom editor. Includes sorting, filtering, zoom, themes, and large-folder tuning.",
   "icon": "assets/logo.png",
-  "version": "2.0.6-fork.1",
+  "version": "2.0.6",
   "author": "Zhang Jian <zhangjian1713@gmail.com>",
-  "homepage": "https://github.com/ZhangJian1713/vscode-image-viewer",
+  "homepage": "https://github.com/tobiashochguertel/vscode-image-viewer",
   "license": "MIT",
   "engines": {
     "vscode": "^1.75.0"
@@ -56,7 +56,7 @@
     "customEditors": [
       {
         "viewType": "vscode-infra.imageViewer",
-        "displayName": "Image Viewer",
+        "displayName": "Image Viewer (Fork Fixes)",
         "selector": [
           { "filenamePattern": "*.svg" },
           { "filenamePattern": "*.png" },
@@ -111,10 +111,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ZhangJian1713/vscode-image-viewer.git"
+    "url": "https://github.com/tobiashochguertel/vscode-image-viewer.git"
   },
   "bugs": {
-    "url": "https://github.com/ZhangJian1713/vscode-image-viewer/issues"
+    "url": "https://github.com/tobiashochguertel/vscode-image-viewer/issues"
   },
   "devDependencies": {
     "@babel/core": "^7.14.8",

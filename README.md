@@ -38,6 +38,16 @@ fixes) and repairs the zoom state machine:
 - `zoomInAtMaxBehaviour` now only controls the `onMaxStopReached`
   notification; zoom-in is never blocked at the top stop.
 
+### Installing this fork
+
+The fork is published under its own extension ID
+(`TobiasHochguertel.image-viewer-fork`), so it installs **alongside** the
+upstream extension (`vscode-infra.image-viewer`) — disable whichever one you
+don't want active.
+
+- [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TobiasHochguertel.image-viewer-fork)
+- [Open VSX](https://open-vsx.org/extension/TobiasHochguertel/image-viewer-fork)
+
 ### Building this fork
 
 ```bash
