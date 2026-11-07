@@ -1,52 +1,50 @@
-/** Grid thumbnails: small files in globalStorage (JPEG by default on macOS via `sips`; PNG in raw-QL experimental mode) served through `asWebviewUri`. */
+/** Grid thumbnails: JPEG files in globalStorage, served through `asWebviewUri`. macOS uses in-process ImageIO. */
 /* eslint-disable @typescript-eslint/no-var-requires */
-import { execFile } from 'child_process'
 import { createHash } from 'crypto'
 import * as fs from 'fs'
-import * as os from 'os'
+import { readImageDimensions } from './imageDimensions'
 import * as path from 'path'
-import { promisify } from 'util'
-import imageSize from 'image-size'
+import { setTimeout, setInterval, clearTimeout, clearInterval } from 'timers'
 import { utils } from '@easy_vscode/core'
 import { ExtensionContext, Uri, workspace, extensions } from 'vscode'
+import { thumbnailEvictionCandidates } from './thumbnailCachePolicy'
+import type { ThumbnailCacheEntry as CacheFileEntry } from './thumbnailCachePolicy'
+import { imageioThumbnail } from './imageioThumbnail'
+import { sharpThumbnail } from './sharpThumbnail'
+import { thumbnailBackend } from '../../config/thumbnailBackend'
 import {
   GRID_THUMB_GLOBAL_SUBDIR,
   GRID_THUMB_JANITOR_MIN_INTERVAL_MS,
   GRID_THUMB_JANITOR_TARGET_RATIO,
-  GRID_THUMB_JPEG_DECODE_MAX_MEMORY_MB,
   GRID_THUMB_JPEG_QUALITY,
-  GRID_THUMB_MACOS_USE_SIPS,
-  GRID_THUMB_MACOS_USE_QUICKLOOK,
-  GRID_THUMB_MACOS_QUICKLOOK_RAW_PNG,
   GRID_THUMB_MAX_CACHE_BYTES,
   GRID_THUMB_MAX_CACHE_FILES,
   GRID_THUMB_MIN_SOURCE_BYTES,
   GRID_THUMB_CACHE_FILENAME_HASH_HEX_CHARS,
   GRID_THUMB_FALLBACK_TARGET_EDGE_PX,
-  GRID_THUMB_RASTER_EXTENSIONS,
   GRID_THUMB_RESOLVE_MEMO_MAX,
   gridThumbCacheProfile,
   gridThumbDiskCacheExtension,
-  gridThumbMacQlIntermediatePx,
   normalizeThumbTierEdge
 } from '../../config/gridThumb'
 
-const execFileAsync = promisify(execFile)
+const RASTER_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.tif', '.tiff', '.avif', '.apng'])
+const MACOS_RASTER_EXT = new Set([...RASTER_EXT, '.bmp', '.ico'])
+// 图库和所有预览共享六个生成名额，避免各窗口叠加并发。
+const generationLimit = 6
 
-const MACOS_QLMANAGE = '/usr/bin/qlmanage'
-const MACOS_SIPS = '/usr/bin/sips'
-
-const RASTER_EXT = new Set<string>(GRID_THUMB_RASTER_EXTENSIONS)
-
-export type GridThumbResponse =
-  | { kind: 'thumb'; cacheFsPath: string }
-  | { kind: 'original' }
+export type GridThumbResponse = { kind: 'thumb'; cacheFsPath: string } | { kind: 'original' }
+export type FilmstripThumbResponse = { kind: 'thumb'; cacheFsPath: string } | { kind: 'original'; version: string }
 
 let globalThumbRoot: string | null = null
 /** `Uri.joinPath(globalStorageUri, GRID_THUMB_GLOBAL_SUBDIR)`, used by `asWebviewUri` to align with webview roots. */
 let globalThumbBaseUri: Uri | null = null
 let janitorLastRun = 0
 let janitorScheduled = false
+let janitorRunning = false
+const generationInFlight = new Map<string, Promise<string | null>>()
+const generationQueue: Array<() => Promise<void>> = []
+let generationRunning = 0
 
 /** Called during `activate`: ensure cache directory exists. */
 export function initGridThumbGlobalStorage(context: ExtensionContext): void {
@@ -54,6 +52,17 @@ export function initGridThumbGlobalStorage(context: ExtensionContext): void {
   const root = globalThumbBaseUri.fsPath
   fs.mkdirSync(root, { recursive: true })
   globalThumbRoot = root
+  // 老缓存即使这次只发生命中也要回收；延迟启动避免与首屏图片 I/O 争用。
+  const startup = setTimeout(scheduleJanitor, 3000)
+  const interval = setInterval(scheduleJanitor, GRID_THUMB_JANITOR_MIN_INTERVAL_MS)
+  startup.unref()
+  interval.unref()
+  context.subscriptions.push({
+    dispose: () => {
+      clearTimeout(startup)
+      clearInterval(interval)
+    }
+  })
 }
 
 /** Convert absolute cache path to a `Uri` rooted at `globalThumbBaseUri` (avoid direct `Uri.file` for hosts with stricter webview URI handling). */
@@ -95,21 +104,6 @@ function cacheFilePathsForDigest(fullHex: string, tier: number): { shardDir: str
   return { shardDir, filePath }
 }
 
-/** Read image header via `image-size`; cap target edge to source max edge to avoid upscaled blur. */
-function decodeBoxEdgeClampedToOriginal(absPath: string, tierEdge: number): number {
-  const cap = normalizeThumbTierEdge(tierEdge)
-  try {
-    const dim = imageSize(absPath) as { width?: number; height?: number }
-    if (dim.width && dim.height && dim.width > 0 && dim.height > 0) {
-      const origMax = Math.max(dim.width, dim.height)
-      return Math.min(cap, origMax)
-    }
-  } catch {
-    //
-  }
-  return cap
-}
-
 function touchCacheFile(fsPath: string): void {
   const now = new Date()
   try {
@@ -149,8 +143,7 @@ function resolveThumbMemoSet(key: string, value: GridThumbResponse): void {
 
 function extensionRoot(): string {
   const packaged =
-    extensions.getExtension('vscode-infra.image-viewer') ??
-    extensions.all.find((e) => e.id.endsWith('.image-viewer'))
+    extensions.getExtension('vscode-infra.image-viewer') ?? extensions.all.find((e) => e.id.endsWith('.image-viewer'))
 
   if (packaged) {
     return packaged.extensionPath
@@ -162,10 +155,6 @@ function extensionRoot(): string {
   }
 
   return path.resolve(__dirname, '..')
-}
-
-function wasmDir(): string {
-  return path.join(extensionRoot(), 'dist', 'wasm')
 }
 
 function isPathUnderRoot(file: string, root: string): boolean {
@@ -217,7 +206,7 @@ function resolveExistingNormalizedPath(p: string): string | null {
 
 function skipReasonByMeta(absPath: string, st: fs.Stats): string | null {
   const ext = path.extname(absPath).toLowerCase()
-  if (!RASTER_EXT.has(ext)) {
+  if (!(process.platform === 'darwin' ? MACOS_RASTER_EXT : RASTER_EXT).has(ext)) {
     return `non-raster ext=${ext}`
   }
   if (st.size < GRID_THUMB_MIN_SOURCE_BYTES) {
@@ -226,249 +215,15 @@ function skipReasonByMeta(absPath: string, st: fs.Stats): string | null {
   return null
 }
 
-function resolveJimp(): { read: (...args: unknown[]) => Promise<unknown>; MIME_JPEG: string } {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let m: any = require('jimp')
-  for (let d = 0; d < 4 && m; d++) {
-    if (typeof m.read === 'function') {
-      return m
-    }
-    m = m.default
-  }
-  throw new TypeError('Jimp.read is not a function (jimp interop / bundle shape)')
-}
-
-let jpegDecodeMemoryPatched = false
-
-function ensureJpegDecodeMemoryLimitMb(minMb: number): void {
-  if (jpegDecodeMemoryPatched) {
-    return
-  }
-  jpegDecodeMemoryPatched = true
-  try {
-    const jpegJs = require('jpeg-js') as {
-      decode: (data: Buffer, opts?: Record<string, unknown>) => unknown
-    }
-    const originalDecode = jpegJs.decode
-    if (typeof originalDecode !== 'function') {
-      return
-    }
-    jpegJs.decode = (data: Buffer, userOpts?: Record<string, unknown>) => {
-      const prev =
-        userOpts && typeof userOpts.maxMemoryUsageInMB === 'number' ? userOpts.maxMemoryUsageInMB : 0
-      return originalDecode(data, {
-        ...userOpts,
-        maxMemoryUsageInMB: Math.max(prev, minMb)
-      })
-    }
-  } catch {
-    //
-  }
-}
-
-async function rasterToJpegBuffer(absPath: string, tierEdge: number): Promise<Buffer> {
-  const box = decodeBoxEdgeClampedToOriginal(absPath, tierEdge)
-  ensureJpegDecodeMemoryLimitMb(GRID_THUMB_JPEG_DECODE_MAX_MEMORY_MB)
-  const Jimp = resolveJimp()
-  const img = (await Jimp.read(absPath)) as {
-    scaleToFit: (w: number, h: number) => void
-    quality: (n: number) => { getBufferAsync: (mime: string) => Promise<Buffer> }
-  }
-  img.scaleToFit(box, box)
-  return img.quality(GRID_THUMB_JPEG_QUALITY).getBufferAsync(Jimp.MIME_JPEG)
-}
-
-async function macosSipsToJpegBuffer(absPath: string, tierEdge: number): Promise<Buffer | null> {
-  if (process.platform !== 'darwin' || !GRID_THUMB_MACOS_USE_SIPS) {
-    return null
-  }
-  if (!fs.existsSync(MACOS_SIPS)) {
-    return null
-  }
-  const box = decodeBoxEdgeClampedToOriginal(absPath, tierEdge)
-  if (!Number.isFinite(box) || box <= 0) {
-    return null
-  }
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'iv-grid-sips-'))
-  const outJpg = path.join(tmpDir, 'thumb.jpg')
-  try {
-    await execFileAsync(
-      MACOS_SIPS,
-      [
-        '-Z',
-        String(Math.round(box)),
-        '-s',
-        'format',
-        'jpeg',
-        '-s',
-        'formatOptions',
-        String(GRID_THUMB_JPEG_QUALITY),
-        '-o',
-        outJpg,
-        absPath
-      ],
-      {
-        timeout: 25_000,
-        maxBuffer: 32 * 1024 * 1024
-      }
-    )
-    if (!fs.existsSync(outJpg)) {
-      return null
-    }
-    const buf = await fs.promises.readFile(outJpg)
-    return buf.length > 0 ? buf : null
-  } catch {
-    return null
-  } finally {
-    await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-  }
-}
-
-async function macosQlmanageThumbnailPng(absPath: string, sizePx: number): Promise<Buffer | null> {
-  if (process.platform !== 'darwin') {
-    return null
-  }
-  if (!fs.existsSync(MACOS_QLMANAGE)) {
-    return null
-  }
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'iv-grid-ql-'))
-  try {
-    await execFileAsync(
-      MACOS_QLMANAGE,
-      ['-t', '-s', String(sizePx), '-o', tmpDir, absPath],
-      {
-        timeout: 25_000,
-        maxBuffer: 8 * 1024 * 1024
-      }
-    )
-    const outPng = path.join(tmpDir, path.basename(absPath) + '.png')
-    if (!fs.existsSync(outPng)) {
-      return null
-    }
-    const pngBuf = await fs.promises.readFile(outPng)
-    return pngBuf.length > 0 ? pngBuf : null
-  } catch {
-    return null
-  } finally {
-    await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-  }
-}
-
-async function macosQuickLookToJpegBuffer(absPath: string, tierEdge: number): Promise<Buffer | null> {
-  if (process.platform !== 'darwin' || !GRID_THUMB_MACOS_USE_QUICKLOOK) {
-    return null
-  }
-  const qlPx = gridThumbMacQlIntermediatePx(tierEdge)
-  const pngBuf = await macosQlmanageThumbnailPng(absPath, qlPx)
-  if (!pngBuf) {
-    return null
-  }
-  try {
-    const box = decodeBoxEdgeClampedToOriginal(absPath, tierEdge)
-    ensureJpegDecodeMemoryLimitMb(GRID_THUMB_JPEG_DECODE_MAX_MEMORY_MB)
-    const Jimp = resolveJimp()
-    const img = (await Jimp.read(pngBuf)) as {
-      scaleToFit: (w: number, h: number) => void
-      quality: (n: number) => { getBufferAsync: (mime: string) => Promise<Buffer> }
-    }
-    img.scaleToFit(box, box)
-    return img.quality(GRID_THUMB_JPEG_QUALITY).getBufferAsync(Jimp.MIME_JPEG)
-  } catch {
-    return null
-  }
-}
-
-type WebpDecodeModule = typeof import('@jsquash/webp/decode')
-let webpDecodeModPromise: Promise<WebpDecodeModule> | null = null
-
-async function getWebpDecode(): Promise<WebpDecodeModule> {
-  if (!webpDecodeModPromise) {
-    webpDecodeModPromise = (async () => {
-      const wasmDisk = path.join(wasmDir(), 'webp_dec.wasm')
-      if (!fs.existsSync(wasmDisk)) {
-        throw new Error(`webp_dec.wasm missing (copy webpack plugin): ${wasmDisk}`)
-      }
-      const wasmBytes = fs.readFileSync(wasmDisk)
-      const wasmCompiled = await WebAssembly.compile(wasmBytes)
-      const mod = (await import('@jsquash/webp/decode')) as WebpDecodeModule
-      await mod.init(wasmCompiled)
-      return mod
-    })()
-  }
-  return webpDecodeModPromise
-}
-
-async function rasterToJpegBufferWebp(absPath: string, tierEdge: number): Promise<Buffer | null> {
-  const box = decodeBoxEdgeClampedToOriginal(absPath, tierEdge)
-  ensureJpegDecodeMemoryLimitMb(GRID_THUMB_JPEG_DECODE_MAX_MEMORY_MB)
-  try {
-    const { default: decodeWebp } = await getWebpDecode()
-    const raw = fs.readFileSync(absPath)
-    const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)
-    const imageData = await decodeWebp(ab)
-    const JimpMod = resolveJimp()
-    type JimpThumb = {
-      bitmap: { data: Buffer }
-      scaleToFit: (w: number, h: number) => void
-      quality: (n: number) => { getBufferAsync: (mime: string) => Promise<Buffer> }
-    }
-    const img = await new Promise<JimpThumb>((resolve, reject) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      new (JimpMod as any)(imageData.width, imageData.height, (err: Error | null, image: unknown) => {
-        if (err || !image) {
-          reject(err ?? new Error('Jimp empty'))
-          return
-        }
-        resolve(image as JimpThumb)
-      })
-    })
-    img.bitmap.data.set(imageData.data)
-    img.scaleToFit(box, box)
-    return img.quality(GRID_THUMB_JPEG_QUALITY).getBufferAsync(JimpMod.MIME_JPEG)
-  } catch {
-    return null
-  }
-}
-
-async function rasterToJpegBufferByPath(absPath: string, tierEdge: number): Promise<Buffer | null> {
-  if (
-    process.platform === 'darwin' &&
-    GRID_THUMB_MACOS_USE_QUICKLOOK &&
-    GRID_THUMB_MACOS_QUICKLOOK_RAW_PNG
-  ) {
-    const box = decodeBoxEdgeClampedToOriginal(absPath, tierEdge)
-    const pngBuf = await macosQlmanageThumbnailPng(absPath, box)
-    return pngBuf && pngBuf.length > 0 ? pngBuf : null
-  }
-
-  const sipsBuf = await macosSipsToJpegBuffer(absPath, tierEdge)
-  if (sipsBuf && sipsBuf.length > 0) {
-    return sipsBuf
-  }
-
-  const macBuf = await macosQuickLookToJpegBuffer(absPath, tierEdge)
-  if (macBuf && macBuf.length > 0) {
-    return macBuf
-  }
-  const ext = path.extname(absPath).toLowerCase()
-  if (ext === '.webp') {
-    return rasterToJpegBufferWebp(absPath, tierEdge)
-  }
-  try {
-    return await rasterToJpegBuffer(absPath, tierEdge)
-  } catch {
-    return null
-  }
-}
-
-interface CacheFileEntry {
-  path: string
-  size: number
-  mtimeMs: number
+async function rasterToJpegBufferByPath(absPath: string, tierEdge: number): Promise<Buffer> {
+  const edge = normalizeThumbTierEdge(tierEdge)
+  return thumbnailBackend() === 'imageio'
+    ? imageioThumbnail(extensionRoot(), absPath, edge, GRID_THUMB_JPEG_QUALITY)
+    : sharpThumbnail(extensionRoot(), absPath, edge, GRID_THUMB_JPEG_QUALITY)
 }
 
 /** Throttle concurrent `stat` calls while janitor lists cache directories. */
-const GRID_THUMB_LIST_STAT_CONCURRENCY = 256
+const GRID_THUMB_LIST_STAT_CONCURRENCY = 32
 
 async function listGlobalCacheFiles(root: string): Promise<CacheFileEntry[]> {
   const paths: string[] = []
@@ -501,7 +256,10 @@ async function listGlobalCacheFiles(root: string): Promise<CacheFileEntry[]> {
     const chunk = paths.slice(i, i + GRID_THUMB_LIST_STAT_CONCURRENCY)
     const rows = await Promise.all(
       chunk.map((fp) =>
-        fs.promises.stat(fp).then((st) => (st.isFile() ? { path: fp, size: st.size, mtimeMs: st.mtimeMs } : null))
+        fs.promises
+          .stat(fp)
+          .then((st) => (st.isFile() ? { path: fp, size: st.size, mtimeMs: st.mtimeMs } : null))
+          .catch(() => null)
       )
     )
     for (const row of rows) {
@@ -514,7 +272,7 @@ async function listGlobalCacheFiles(root: string): Promise<CacheFileEntry[]> {
 }
 
 function scheduleJanitor(): void {
-  if (janitorScheduled || !getGlobalThumbRoot()) {
+  if (janitorScheduled || janitorRunning || !getGlobalThumbRoot()) {
     return
   }
   janitorScheduled = true
@@ -530,32 +288,53 @@ async function runJanitor(): Promise<void> {
     return
   }
   const now = Date.now()
-  if (now - janitorLastRun < GRID_THUMB_JANITOR_MIN_INTERVAL_MS) {
+  if (janitorRunning || now - janitorLastRun < GRID_THUMB_JANITOR_MIN_INTERVAL_MS) {
     return
   }
   janitorLastRun = now
+  janitorRunning = true
   try {
     const files = await listGlobalCacheFiles(root)
-    let totalBytes = files.reduce((s, f) => s + f.size, 0)
-    if (totalBytes <= GRID_THUMB_MAX_CACHE_BYTES && files.length <= GRID_THUMB_MAX_CACHE_FILES) {
-      return
+    const victims = thumbnailEvictionCandidates(
+      files,
+      GRID_THUMB_MAX_CACHE_BYTES,
+      GRID_THUMB_MAX_CACHE_FILES,
+      GRID_THUMB_JANITOR_TARGET_RATIO
+    )
+    const removed = new Set<string>()
+    for (let start = 0; start < victims.length; start += 16) {
+      await Promise.all(
+        victims.slice(start, start + 16).map((file) =>
+          fs.promises
+            .unlink(file.path)
+            .then(() => {
+              removed.add(file.path)
+            })
+            .catch(() => {})
+        )
+      )
     }
-    const sorted = [...files].sort((a, b) => a.mtimeMs - b.mtimeMs)
-    const byteTarget = GRID_THUMB_MAX_CACHE_BYTES * GRID_THUMB_JANITOR_TARGET_RATIO
-    const countTarget = Math.floor(GRID_THUMB_MAX_CACHE_FILES * GRID_THUMB_JANITOR_TARGET_RATIO)
-    let remaining = sorted.length
-    const toUnlink: string[] = []
-    for (const f of sorted) {
-      if (totalBytes <= byteTarget && remaining <= countTarget) {
-        break
+    // 磁盘淘汰必须同时失效 URL memo，否则滚回旧图片时会永久命中已删除路径。
+    for (const [key, value] of resolveThumbMemo) {
+      if (value.kind === 'thumb' && removed.has(value.cacheFsPath)) {
+        resolveThumbMemo.delete(key)
       }
-      toUnlink.push(f.path)
-      totalBytes -= f.size
-      remaining--
     }
-    await Promise.all(toUnlink.map((p) => fs.promises.unlink(p).catch(() => {})))
   } catch {
     //
+  } finally {
+    janitorRunning = false
+  }
+}
+
+function drainGenerationQueue(): void {
+  while (generationRunning < generationLimit && generationQueue.length) {
+    const run = generationQueue.shift()!
+    generationRunning++
+    void run().finally(() => {
+      generationRunning--
+      drainGenerationQueue()
+    })
   }
 }
 
@@ -567,19 +346,39 @@ async function ensureThumbOnDisk(realPath: string, st: fs.Stats, targetTierEdge:
   const tier = normalizeThumbTierEdge(targetTierEdge)
   const fullHex = cacheDigestFullHex(realPath, st.mtimeMs, st.size, tier)
   const { shardDir, filePath } = cacheFilePathsForDigest(fullHex, tier)
+  const existing = generationInFlight.get(filePath)
+  if (existing) {
+    return existing
+  }
   if (fs.existsSync(filePath)) {
     touchCacheFile(filePath)
     return filePath
   }
-  const thumbBuf = await rasterToJpegBufferByPath(realPath, targetTierEdge)
-  if (!thumbBuf || thumbBuf.length === 0) {
-    return null
+  const task = new Promise<string | null>((resolve) => {
+    generationQueue.push(async () => {
+      try {
+        const thumbBuf = await rasterToJpegBufferByPath(realPath, targetTierEdge)
+        if (!thumbBuf || !thumbBuf.length) {
+          resolve(null)
+          return
+        }
+        await fs.promises.mkdir(shardDir, { recursive: true })
+        await fs.promises.writeFile(filePath, thumbBuf)
+        touchCacheFile(filePath)
+        scheduleJanitor()
+        resolve(filePath)
+      } catch {
+        resolve(null)
+      }
+    })
+  })
+  generationInFlight.set(filePath, task)
+  drainGenerationQueue()
+  try {
+    return await task
+  } finally {
+    generationInFlight.delete(filePath)
   }
-  fs.mkdirSync(shardDir, { recursive: true })
-  await fs.promises.writeFile(filePath, thumbBuf)
-  touchCacheFile(filePath)
-  scheduleJanitor()
-  return filePath
 }
 
 export async function resolveThumbForGrid(
@@ -614,7 +413,14 @@ export async function resolveThumbForGrid(
     const memoKey = resolveThumbMemoKey(realPath, st.mtimeMs, st.size, targetTierEdge)
     const memoHit = resolveThumbMemoGet(memoKey)
     if (memoHit) {
-      return memoHit
+      if (memoHit.kind === 'original') {
+        return memoHit
+      }
+      if (fs.existsSync(memoHit.cacheFsPath)) {
+        touchCacheFile(memoHit.cacheFsPath)
+        return memoHit
+      }
+      resolveThumbMemo.delete(memoKey)
     }
 
     const cachePath = await ensureThumbOnDisk(realPath, st, targetTierEdge)
@@ -629,4 +435,27 @@ export async function resolveThumbForGrid(
   } catch {
     return { kind: 'original' }
   }
+}
+
+/** Read bounded image headers asynchronously; unknown dimensions never authorize direct raster display. */
+async function isSmallFilmstripImage(filePath: string): Promise<boolean> {
+  const dimensions = await readImageDimensions(filePath)
+  const sizes = dimensions?.images?.length ? dimensions.images : [dimensions]
+  return !!dimensions && dimensions.type !== 'tiff' && sizes.every((size) => size && Number.isFinite(size.width) && Number.isFinite(size.height)
+    && size.width > 0 && size.height > 0 && size.width <= 200 && size.height <= 200)
+}
+
+/** Caller authorizes the file. Original is an explicit SVG/small-pixel choice, never a decode-failure fallback. */
+export async function resolveFilmstripThumbnail(authorizedPath: string): Promise<FilmstripThumbResponse | null> {
+  try {
+    const realPath = await fs.promises.realpath(authorizedPath)
+    const stat = await fs.promises.stat(realPath)
+    if (!stat.isFile()) { return null }
+    if (path.extname(realPath).toLowerCase() === '.svg' || await isSmallFilmstripImage(realPath)) {
+      return { kind: 'original', version: `${stat.mtimeMs}-${stat.size}` }
+    }
+    // Compressed byte count does not bound decoded pixels. Large rasters always use the 200px cache.
+    const cacheFsPath = await ensureThumbOnDisk(realPath, stat, 200)
+    return cacheFsPath ? { kind: 'thumb', cacheFsPath } : null
+  } catch { return null }
 }

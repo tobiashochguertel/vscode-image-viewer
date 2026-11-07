@@ -1,33 +1,27 @@
-import { BulbOutlined, GithubOutlined, StarOutlined } from '@ant-design/icons'
-import { callVscode } from '@easy_vscode/webview'
+import { BulbOutlined, GithubOutlined, StarOutlined, ExportOutlined } from '@ant-design/icons'
+import { callGalleryHost } from './galleryBridge'
 import { Button, Modal, Space } from 'antd'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useI18n } from '../../i18n/react'
+import type { FeedbackAction } from '../../feedback'
 import { MESSAGE_CMD } from '../../constants'
 import {
   ANNOUNCEMENT_DISMISS_STORAGE_KEY,
   ANNOUNCEMENT_ID,
-  getAnnouncementBarTopStrings,
   getAnnouncementStrings,
-  ISSUES_URL,
-  REPOSITORY_URL
 } from './announcementConfig'
 
-function openExternalUrl(url: string): void {
-  callVscode({ cmd: MESSAGE_CMD.OPEN_EXTERNAL_URI, data: { url } })
-}
-
-export type AnnouncementBarProps = {
-  /** Host `vscode.env.language` (overrides `navigator` for the modal). */
-  hostUiLanguage?: string
+function openFeedback(action: FeedbackAction): void {
+  callGalleryHost({ cmd: MESSAGE_CMD.OPEN_FEEDBACK, data: { action } })
 }
 
 /**
  * Top bar: version + CTA (opens modal); Issues / Star on the right. Unread users get the modal once; after dismiss, open via bar only.
  */
-export const AnnouncementBar: React.FC<AnnouncementBarProps> = ({ hostUiLanguage }) => {
+export const AnnouncementBar: React.FC = () => {
+  const { t } = useI18n()
   const [modalOpen, setModalOpen] = useState(false)
-  const barTop = useMemo(() => getAnnouncementBarTopStrings(), [])
-  const modalCopy = useMemo(() => getAnnouncementStrings(hostUiLanguage), [hostUiLanguage])
+  const modalCopy = useMemo(() => getAnnouncementStrings(t), [t])
 
   const persistDismiss = useCallback(() => {
     try {
@@ -62,23 +56,32 @@ export const AnnouncementBar: React.FC<AnnouncementBarProps> = ({ hostUiLanguage
           className='iv-announcement-bar__left'
           icon={<BulbOutlined />}
           onClick={() => setModalOpen(true)}
-          aria-label={barTop.openReleaseNotesAria}
+          aria-label={modalCopy.openReleaseNotesAria}
         >
           <span className='iv-announcement-bar__version'>v{ANNOUNCEMENT_ID}</span>
-          <span className='iv-announcement-bar__cta'>{barTop.barCta}</span>
-          <span className='iv-announcement-bar__hint'>{barTop.barHint}</span>
+          <span className='iv-announcement-bar__cta'>{modalCopy.barCta}</span>
+          <span className='iv-announcement-bar__hint'>{modalCopy.barHint}</span>
         </Button>
         <Space size={4} className='iv-announcement-bar__right'>
           <Button
-            type='default'
+            type='text'
             size='small'
+            className='iv-community-link'
             icon={<GithubOutlined />}
-            onClick={() => openExternalUrl(ISSUES_URL)}
+            aria-label={t('feedback.openIssues')}
+            onClick={() => openFeedback('issues')}
           >
-            Issues
+            {t('feedback.browse')} <ExportOutlined className='iv-community-external' />
           </Button>
-          <Button type='default' size='small' icon={<StarOutlined />} onClick={() => openExternalUrl(REPOSITORY_URL)}>
-            Star
+          <Button
+            type='text'
+            size='small'
+            className='iv-community-link'
+            icon={<StarOutlined />}
+            aria-label={t('feedback.openRepository')}
+            onClick={() => openFeedback('repository')}
+          >
+            {t('feedback.star')} <ExportOutlined className='iv-community-external' />
           </Button>
         </Space>
       </div>
@@ -93,13 +96,18 @@ export const AnnouncementBar: React.FC<AnnouncementBarProps> = ({ hostUiLanguage
           </Button>
         ]}
         width={560}
-        destroyOnClose
       >
-        <ul className='iv-announcement-feature-list'>
-          {modalCopy.features.map((text) => (
-            <li key={text}>{text}</li>
-          ))}
-        </ul>
+        <div className='iv-announcement-details'>
+          <ul className='iv-announcement-feature-list'>
+            {modalCopy.updates.map(({ kind, text }, index) => (
+              <li key={index}>
+                <strong className='iv-announcement-category'>{modalCopy.categoryLabels[kind]}</strong>
+                {text}
+              </li>
+            ))}
+          </ul>
+          <p className='iv-announcement-feedback'>{modalCopy.feedbackInvitation}</p>
+        </div>
       </Modal>
     </>
   )

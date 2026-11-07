@@ -4,12 +4,12 @@
   "displayName": "Image Viewer (Fork Fixes)",
   "description": "Browse workspace images in a fast thumbnail gallery or open individual files in a full-screen custom editor. Includes sorting, filtering, zoom, themes, and large-folder tuning.",
   "icon": "assets/logo.png",
-  "version": "2.0.6",
+  "version": "2.3.0",
   "author": "Zhang Jian <zhangjian1713@gmail.com>",
   "homepage": "https://github.com/tobiashochguertel/vscode-image-viewer",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.92.0"
   },
   "categories": [
     "Visualization",
@@ -17,20 +17,30 @@
   ],
   "keywords": [
     "image",
-    "images",
+    "image viewer",
+    "image preview",
+    "default image viewer",
+    "photo viewer",
+    "image gallery",
     "gallery",
     "thumbnail",
     "preview",
+    "custom-editor",
+    "default-editor",
+    "zoom",
+    "pan",
+    "rotate",
+    "flip",
+    "minimap",
     "folder",
-    "columns",
-    "base64",
+    "search",
+    "filter",
     "svg",
     "png",
     "jpg",
     "webp",
-    "img",
-    "pic",
-    "photos",
+    "gif",
+    "avif",
     "custom-editor",
     "default-editor"
   ],
@@ -40,16 +50,21 @@
     "commands": [
       {
         "command": "vscode-infra.webviewImageViewer",
-        "title": "View Images 🌄"
+        "title": "%command.viewImages%"
       },
       {
         "command": "vscode-infra.setAsDefaultImageViewer",
-        "title": "Use as Default Image Editor",
+        "title": "%command.setDefault%",
         "category": "Image Viewer"
       },
       {
         "command": "vscode-infra.restoreBuiltInImageViewer",
-        "title": "Restore VS Code's Default Image Editor",
+        "title": "%command.restoreDefault%",
+        "category": "Image Viewer"
+      },
+      {
+        "command": "vscode-infra.cleanWebviewImageCache",
+        "title": "%command.cleanCache%",
         "category": "Image Viewer"
       }
     ],
@@ -58,18 +73,42 @@
         "viewType": "vscode-infra.imageViewer",
         "displayName": "Image Viewer (Fork Fixes)",
         "selector": [
-          { "filenamePattern": "*.svg" },
-          { "filenamePattern": "*.png" },
-          { "filenamePattern": "*.jpeg" },
-          { "filenamePattern": "*.jpg" },
-          { "filenamePattern": "*.ico" },
-          { "filenamePattern": "*.gif" },
-          { "filenamePattern": "*.webp" },
-          { "filenamePattern": "*.bmp" },
-          { "filenamePattern": "*.tif" },
-          { "filenamePattern": "*.tiff" },
-          { "filenamePattern": "*.apng" },
-          { "filenamePattern": "*.avif" }
+          {
+            "filenamePattern": "*.svg"
+          },
+          {
+            "filenamePattern": "*.png"
+          },
+          {
+            "filenamePattern": "*.jpeg"
+          },
+          {
+            "filenamePattern": "*.jpg"
+          },
+          {
+            "filenamePattern": "*.ico"
+          },
+          {
+            "filenamePattern": "*.gif"
+          },
+          {
+            "filenamePattern": "*.webp"
+          },
+          {
+            "filenamePattern": "*.bmp"
+          },
+          {
+            "filenamePattern": "*.tif"
+          },
+          {
+            "filenamePattern": "*.tiff"
+          },
+          {
+            "filenamePattern": "*.apng"
+          },
+          {
+            "filenamePattern": "*.avif"
+          }
         ],
         "priority": "option"
       }
@@ -88,18 +127,64 @@
           "group": "z_commands"
         }
       ]
+    },
+    "configuration": {
+      "title": "Image Viewer",
+      "properties": {
+        "imageViewer.showMirrorButtons": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "%preview.showMirrorButtons.description%"
+        },
+        "imageViewer.language": {
+          "type": "string",
+          "default": "auto",
+          "scope": "application",
+          "enum": [
+            "auto",
+            "en",
+            "zh-CN",
+            "zh-TW"
+          ],
+          "enumItemLabels": [
+            "%language.follow%",
+            "English",
+            "简体中文",
+            "繁體中文"
+          ],
+          "description": "%language.description%"
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
-    "compile": "npx webpack --config webpack.extension.js",
-    "watch": "npx webpack --config webpack.extension.js --watch",
-    "package": "yarn ui-build && npx webpack --config webpack.extension.js --mode production --devtool hidden-source-map",
+    "native:build": "node scripts/build-imageio.cjs && node scripts/prepare-sharp.cjs",
+    "native:package": "node scripts/build-imageio.cjs && node scripts/prepare-sharp.cjs --package",
+    "test:sharp": "yarn native:build && node scripts/test-sharp.cjs",
+    "test:thumbnail-native": "yarn compile && jest src/webviewController/imagesViewer/nativeTests --runInBand",
+    "test:imageio": "yarn native:build && node scripts/test-imageio.cjs",
+    "compile": "yarn native:build && npx webpack --config webpack.extension.js",
+    "watch": "yarn native:build && npx webpack --config webpack.extension.js --watch",
+    "package": "node scripts/package.cjs",
     "vsix": "bash scripts/vsix.sh",
+    "vsix:all": "node scripts/vsix-platforms.cjs",
+    "vsix:release": "node scripts/vsix-platforms.cjs --release",
+    "publish:vscode": "node scripts/publish.cjs vscode",
+    "publish:openvsx": "node scripts/publish.cjs openvsx",
+    "publish:all": "node scripts/publish.cjs all",
+    "release:check": "yarn check-type && yarn lint && yarn test:gallery && yarn test:resource-cache && yarn test:preview && yarn test:publish && yarn test:i18n",
+    "release:verify": "node scripts/release-verify.cjs",
+    "release:all": "yarn release:check && yarn vsix:release && yarn release:verify && yarn publish:all",
+    "publish:check": "node scripts/publish.cjs check",
+    "test:publish": "node --test scripts/publish.test.cjs",
+    "openvsx:check": "node scripts/openvsx.cjs check",
+    "openvsx:publish": "node scripts/openvsx.cjs publish",
     "test-compile": "tsc -p ./",
     "test-watch": "tsc -watch -p ./",
     "pretest": "yarn run test-compile && yarn run lint",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint src --ext ts,tsx",
     "test": "node ./out/test/runTest.js",
     "vendor:template": "node scripts/vendor-minimal-react-template.cjs",
     "ui-dev": "npx webpack serve --config scaffold/webview.webpack.js --color --progress --mode development",
@@ -107,7 +192,12 @@
     "ui-build": "npx webpack --config scaffold/webview.webpack.js --color --mode production",
     "lint-staged": "lint-staged",
     "check-type": "tsc --noEmit",
-    "bench:thumb-mac": "node scripts/benchmark-ql-vs-jimp.cjs"
+    "test:resource-cache": "jest src/webview/resourceCache --runInBand",
+    "test:gallery": "jest src/folderFilterRules.test.ts src/feedback.test.ts src/webview/webviewPalette.test.ts src/webview/PreviewImages/gallery*.test.* src/webviewController/imagesViewer/*.test.ts --runInBand",
+    "bench:thumb-mac": "node scripts/benchmark-ql-vs-jimp.cjs",
+    "test:preview": "jest src/previewPreferencesHost.test.ts src/webview/usePreviewPreferences.test.tsx src/webview/previewPackage.test.tsx src/webview/useHostFullscreen.test.tsx src/windowFullscreen.test.ts src/webview/filmstripThumbnailStore.test.ts src/webview/useFilmstrip.test.tsx src/filmstripHost.test.ts src/webview/ShortcutHelp.test.tsx --runInBand",
+    "bench:thumbnail-backends": "node scripts/benchmark-imageio-sharp.cjs",
+    "test:i18n": "jest src/i18n src/webview/SingleImageViewer.test.tsx src/webview/notifications.test.tsx --runInBand"
   },
   "repository": {
     "type": "git",
@@ -128,7 +218,7 @@
     "@babel/preset-react": "^7.14.5",
     "@babel/preset-typescript": "^7.14.5",
     "@babel/register": "^7.14.5",
-    "@babel/runtime": "^7.14.8",
+    "@babel/runtime": "^7.29.10",
     "@commitlint/cli": "^12.1.4",
     "@svgr/webpack": "^5.5.0",
     "@testing-library/react-hooks": "^7.0.1",
@@ -138,7 +228,6 @@
     "@types/mocha": "^8.2.2",
     "@types/node": "14.x",
     "@types/react-router-dom": "^5.1.8",
-    "@types/styled-components": "^5.1.11",
     "@types/vscode": "^1.75.0",
     "@typescript-eslint/eslint-plugin": "^4.4.0",
     "@typescript-eslint/parser": "^4.4.0",
@@ -146,8 +235,6 @@
     "awesome-typescript-loader": "^5.2.1",
     "babel-loader": "^8.2.2",
     "babel-plugin-import": "^1.13.3",
-    "babel-plugin-styled-components": "^1.13.2",
-    "child_process": "^1.0.2",
     "clean-webpack-plugin": "^4.0.0-alpha.0",
     "connect-history-api-fallback": "^1.6.0",
     "conventional-changelog-conventionalcommits": "^4.6.0",
@@ -168,11 +255,13 @@
     "html-webpack-plugin": "^5.3.2",
     "husky": "4.2.3",
     "jest": "^27.0.6",
+    "jimp": "0.22.12",
     "less": "^4.1.1",
     "less-loader": "^10.0.1",
     "lint-staged": "^11.0.1",
     "mini-css-extract-plugin": "^2.1.0",
     "mocha": "^8.4.0",
+    "ovsx": "1.1.1",
     "prettier": "^2.3.2",
     "prettier-eslint-cli": "^5.0.1",
     "progress-bar-webpack-plugin": "^2.1.0",
@@ -200,27 +289,31 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.0",
-    "@easy_vscode/core": "2.0.1",
-    "@easy_vscode/webview": "2.0.1",
-    "@jsquash/webp": "1.5.0",
-    "ahooks": "^3.7.5",
+    "@easy_vscode/core": "3.0.0",
+    "@easy_vscode/webview": "2.0.2",
     "antd": "^5.22.0",
-    "axios": "^0.24.0",
     "clipboard": "^2.0.8",
     "fs-extra": "^10.0.0",
     "i18next": "^21.9.0",
-    "image-size": "^1.0.2",
-    "jimp": "0.22.12",
+    "image-size": "2.0.4",
     "json5": "^2.2.3",
-    "lodash": "^4.17.21",
+    "picomatch": "4.0.7",
     "react": "^17.0.2",
     "react-dom": "^17.0.2",
     "react-i18next": "^11.18.3",
-    "right-image-preview": "github:tobiashochguertel/right-image-preview#v0.6.1-fork.1",
-    "styled-components": "^5.3.0"
+    "right-image-preview": "0.9.0",
+    "sharp": "0.35.5"
   },
   "resolutions": {
     "webpack": "5.73.0",
     "rc-util": "5.44.4"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^react$": "<rootDir>/node_modules/react",
+      "^react/(.*)$": "<rootDir>/node_modules/react/$1",
+      "^react-dom$": "<rootDir>/node_modules/react-dom",
+      "^react-dom/(.*)$": "<rootDir>/node_modules/react-dom/$1"
+    }
   }
 }
