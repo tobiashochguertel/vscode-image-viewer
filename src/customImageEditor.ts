@@ -1,15 +1,28 @@
+import { filmstripPreference, filmstripThumbnail } from './filmstripHost'
+import { GRID_THUMB_GLOBAL_SUBDIR } from './config/gridThumb'
+import { assertProjectResource } from './webviewController/imagesViewer/projectResource'
+import { toggleWindowFullscreen } from './windowFullscreen'
 import * as fs from 'fs'
+import { previewPreferencesRequest, trackPreviewPreferences } from './previewPreferencesHost'
 import * as path from 'path'
 import * as vscode from 'vscode'
+import { hostText, languageRequest, trackLanguageWebview } from './i18n/languageHost'
+import { webviewUtils } from '@easy_vscode/core'
 import {
-  DIST_WEBVIEW_INDEX_HTML,
   DIST_WEBVIEW_PATH,
+  DIST_WEBVIEW_SINGLE_INDEX_HTML,
   EXTENSION_COMMANDS,
   IMAGE_EDITOR_VIEW_TYPE,
   IMAGE_FILE_PATTERNS,
   MESSAGE_CMD,
   WEBVIEW_NAMES
 } from './constants'
+import {
+  compareExplorerImageEntries,
+  ExplorerImageSortEntry,
+  ExplorerLexicographicOptions,
+  ExplorerSortOrder
+} from './explorerImageSort'
 
 class ImageViewerDocument implements vscode.CustomDocument {
   public readonly uri: vscode.Uri
@@ -22,35 +35,126 @@ class ImageViewerDocument implements vscode.CustomDocument {
 }
 
 type SingleImageViewerBootstrap = {
-  src: string
-  name: string
+  images: Array<{
+    id: string
+    src: string
+    name: string
+  }>
+  currentIndex: number
 }
 
-function serializeForInlineScript(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/</g, '\\u003c')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029')
+type SiblingImageEntry = ExplorerImageSortEntry & {
+  uri: vscode.Uri
 }
+
+const supportedImageExtensions = new Set(
+  IMAGE_FILE_PATTERNS.map((pattern) => pattern.replace(/^\*/, '').toLowerCase())
+)
+
+function isSupportedImageName(name: string): boolean {
+  return supportedImageExtensions.has(path.extname(name).toLowerCase())
+}
+
+function documentFolderUri(documentUri: vscode.Uri): vscode.Uri {
+  return vscode.Uri.joinPath(documentUri, '..')
+}
+
+function getExplorerSortSettings(): {
+  sortOrder: ExplorerSortOrder
+  lexicographicOptions: ExplorerLexicographicOptions
+  reverse: boolean
+} {
+  // Explorer sort settings are window-scoped in VS Code, not resource-scoped.
+  const config = vscode.workspace.getConfiguration('explorer')
+  return {
+    sortOrder: config.get<ExplorerSortOrder>('sortOrder', 'default'),
+    lexicographicOptions: config.get<ExplorerLexicographicOptions>(
+      'sortOrderLexicographicOptions',
+      'default'
+    ),
+    reverse: config.get<boolean>('sortOrderReverse', false)
+  }
+}
+
+async function addModifiedTimes(entries: SiblingImageEntry[]): Promise<void> {
+  // Metadata is only needed for explorer.sortOrder=modified. Keep the default path cheap,
+  // and bound provider pressure for folders containing thousands of images.
+  const batchSize = 16
+  for (let start = 0; start < entries.length; start += batchSize) {
+    const batch = entries.slice(start, start + batchSize)
+    await Promise.all(
+      batch.map(async (entry) => {
+        try {
+          entry.mtime = (await vscode.workspace.fs.stat(entry.uri)).mtime
+        } catch {
+          entry.mtime = 0
+        }
+      })
+    )
+  }
+}
+
+async function createSingleImageBootstrap(
+  webview: vscode.Webview,
+  documentUri: vscode.Uri
+): Promise<SingleImageViewerBootstrap> {
+  const folderUri = documentFolderUri(documentUri)
+  const currentName = path.posix.basename(documentUri.path)
+  let entries: SiblingImageEntry[] = []
+
+  try {
+    const directoryEntries = await vscode.workspace.fs.readDirectory(folderUri)
+    entries = directoryEntries
+      .filter(
+        ([name, type]) =>
+          (type & vscode.FileType.Directory) === 0 && isSupportedImageName(name)
+      )
+      .map(([name]) => ({ name, uri: vscode.Uri.joinPath(folderUri, name) }))
+  } catch {
+    // The current document is already authorized/openable. Directory enumeration can still fail
+    // for a provider, so retain a fully functional single-image fallback.
+  }
+
+  if (!entries.some((entry) => entry.name === currentName)) {
+    entries.push({ name: currentName, uri: documentUri })
+  }
+
+  const sortSettings = getExplorerSortSettings()
+  if (sortSettings.sortOrder === 'modified') {
+    await addModifiedTimes(entries)
+  }
+  entries.sort((one, other) => compareExplorerImageEntries(one, other, sortSettings))
+
+  const currentIndex = Math.max(
+    entries.findIndex((entry) => entry.name === currentName),
+    0
+  )
+  return {
+    images: entries.map((entry) => ({
+      id: entry.uri.toString(),
+      src: webview.asWebviewUri(entry.uri).toString(),
+      name: entry.name
+    })),
+    currentIndex
+  }
+}
+
+const { serializeForInlineScript, secureWebviewHtml } = webviewUtils
 
 function createCustomEditorHtml(
   context: vscode.ExtensionContext,
   webview: vscode.Webview,
-  documentUri: vscode.Uri
+  bootstrap: SingleImageViewerBootstrap
 ): string {
-  const htmlPath = path.join(context.extensionPath, DIST_WEBVIEW_INDEX_HTML)
-  const image: SingleImageViewerBootstrap = {
-    src: webview.asWebviewUri(documentUri).toString(),
-    name: path.basename(documentUri.fsPath)
-  }
+  const htmlPath = path.join(context.extensionPath, DIST_WEBVIEW_SINGLE_INDEX_HTML)
 
   let html = fs.readFileSync(htmlPath, 'utf8')
   html = html
     .replace('$currentView$', () => WEBVIEW_NAMES.SingleImageViewer)
     .replace('$vscodeEnv$', () => serializeForInlineScript({ language: vscode.env.language }))
-    .replace('$commandArgs$', () => serializeForInlineScript([image]))
+    .replace('$commandArgs$', () => serializeForInlineScript([bootstrap]))
 
-  return html.replace(
+  return secureWebviewHtml(html.replace(
     /\b(src|href)=(["'])\/([^"']+)\2/g,
     (_match, attribute: string, quote: string, assetPath: string) => {
       const assetUri = webview.asWebviewUri(
@@ -58,7 +162,7 @@ function createCustomEditorHtml(
       )
       return `${attribute}=${quote}${assetUri.toString()}${quote}`
     }
-  )
+  ), webview)
 }
 
 class ImageViewerEditorProvider implements vscode.CustomReadonlyEditorProvider<ImageViewerDocument> {
@@ -72,29 +176,70 @@ class ImageViewerEditorProvider implements vscode.CustomReadonlyEditorProvider<I
     return new ImageViewerDocument(uri)
   }
 
-  resolveCustomEditor(
+  async resolveCustomEditor(
     document: ImageViewerDocument,
     webviewPanel: vscode.WebviewPanel
-  ): void {
+  ): Promise<void> {
     const distRoot = vscode.Uri.joinPath(this.context.extensionUri, DIST_WEBVIEW_PATH)
-    const documentFolder = vscode.Uri.joinPath(document.uri, '..')
+    const documentFolder = documentFolderUri(document.uri)
 
     webviewPanel.webview.options = {
       enableScripts: true,
-      localResourceRoots: [distRoot, documentFolder]
+      enableCommandUris: false,
+      localResourceRoots: [distRoot, documentFolder, vscode.Uri.joinPath(this.context.globalStorageUri, GRID_THUMB_GLOBAL_SUBDIR)]
     }
+
+    let disposed = false
+    let allowedIds = new Set<string>()
+    const languageSubscription = trackLanguageWebview(webviewPanel.webview)
+    const previewSubscription = trackPreviewPreferences(webviewPanel.webview)
+    const messageSubscription = webviewPanel.webview.onDidReceiveMessage(async (message) => {
+      if (message?.cmd === MESSAGE_CMD.GET_PREVIEW_PREFERENCES || message?.cmd === MESSAGE_CMD.SET_PREVIEW_PREFERENCES) {
+        const result = await previewPreferencesRequest(message.cmd, message.data?.showMirrorButtons)
+        if (!disposed) { webviewUtils.invokeCallback(WEBVIEW_NAMES.SingleImageViewer, message, result, webviewPanel.webview) }
+      } else if (message?.cmd === MESSAGE_CMD.CLOSE_CUSTOM_IMAGE_EDITOR) {
+        webviewPanel.dispose()
+      } else if (message?.cmd === MESSAGE_CMD.GET_FILMSTRIP_THUMBNAIL) {
+        const result = await filmstripThumbnail(webviewPanel.webview, message.data?.id, async (id) => {
+          if (!allowedIds.has(id)) { throw new Error('Image is outside this editor session') }
+          const uri = vscode.Uri.parse(id)
+          if (uri.scheme !== 'file') { throw new Error('This resource provider cannot generate local thumbnails') }
+          const { target } = await assertProjectResource(documentFolder.fsPath, uri.fsPath, true)
+          return { filePath: target, sourceUri: uri }
+        })
+        if (!disposed) { webviewUtils.invokeCallback(WEBVIEW_NAMES.SingleImageViewer, message, result, webviewPanel.webview) }
+      } else if (message?.cmd === MESSAGE_CMD.GET_FILMSTRIP_STATE || message?.cmd === MESSAGE_CMD.SET_FILMSTRIP_STATE) {
+        const result = await filmstripPreference('single', message.cmd, message.data?.visible)
+        if (!disposed) { webviewUtils.invokeCallback(WEBVIEW_NAMES.SingleImageViewer, message, result, webviewPanel.webview) }
+      } else if (message?.cmd === MESSAGE_CMD.TOGGLE_WINDOW_FULLSCREEN) {
+        const result = await toggleWindowFullscreen()
+        if (!disposed) {
+          webviewUtils.invokeCallback(WEBVIEW_NAMES.SingleImageViewer, message, result, webviewPanel.webview)
+        }
+      } else if (message?.cmd === MESSAGE_CMD.GET_UI_LANGUAGE || message?.cmd === MESSAGE_CMD.SET_UI_LANGUAGE) {
+        const result = await languageRequest(message.cmd, message.data?.preference)
+        if (!disposed) {
+          webviewUtils.invokeCallback(WEBVIEW_NAMES.SingleImageViewer, message, result, webviewPanel.webview)
+        }
+      }
+    })
+    webviewPanel.onDidDispose(() => {
+      disposed = true
+      messageSubscription.dispose()
+      languageSubscription.dispose()
+      previewSubscription.dispose()
+    })
+
+    const bootstrap = await createSingleImageBootstrap(webviewPanel.webview, document.uri)
+    if (disposed) {
+      return
+    }
+    allowedIds = new Set(bootstrap.images.map((image) => image.id))
     webviewPanel.webview.html = createCustomEditorHtml(
       this.context,
       webviewPanel.webview,
-      document.uri
+      bootstrap
     )
-
-    const messageSubscription = webviewPanel.webview.onDidReceiveMessage((message) => {
-      if (message?.cmd === MESSAGE_CMD.CLOSE_CUSTOM_IMAGE_EDITOR) {
-        webviewPanel.dispose()
-      }
-    })
-    webviewPanel.onDidDispose(() => messageSubscription.dispose())
   }
 }
 
@@ -121,7 +266,7 @@ async function setAsDefaultImageViewer(): Promise<void> {
   }
   await writeGlobalEditorAssociations(next)
   void vscode.window.showInformationMessage(
-    'Image Viewer is now the global default editor for supported images. Workspace settings may override this choice.'
+    hostText('host.defaultSet')
   )
 }
 
@@ -135,7 +280,7 @@ async function restoreBuiltInImageViewer(): Promise<void> {
   }
   await writeGlobalEditorAssociations(next)
   void vscode.window.showInformationMessage(
-    "Image Viewer's global editor associations were removed. VS Code will use its normal editor selection behavior."
+    hostText('host.defaultRestored')
   )
 }
 
@@ -145,7 +290,7 @@ export function registerCustomImageEditor(context: vscode.ExtensionContext): voi
       IMAGE_EDITOR_VIEW_TYPE,
       new ImageViewerEditorProvider(context),
       {
-        webviewOptions: { retainContextWhenHidden: false },
+        webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false
       }
     ),

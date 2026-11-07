@@ -1,9 +1,13 @@
 import * as vscode from 'vscode'
+import { initFilmstripPreferences } from './filmstripHost'
 import { utils } from '@easy_vscode/core'
 import { registryAllWebviews } from './webviewController'
 import { initGridThumbGlobalStorage } from './webviewController/imagesViewer/thumbGridCache'
 import { registerCustomImageEditor } from './customImageEditor'
 import * as path from 'path'
+import { EXTENSION_COMMANDS, RESOURCE_CACHE_CLEANUP_ARG } from './constants'
+import { registerLanguageService } from './i18n/languageHost'
+import { registerPreviewPreferences } from './previewPreferencesHost'
 
 const {envVars} = utils
 
@@ -15,8 +19,18 @@ export function activate(context: vscode.ExtensionContext) {
   console.log('Congratulations, your extension "Image Viewer" is now active!')
   envVars.extensionPath = path.join(context.extensionPath, './')
   initGridThumbGlobalStorage(context)
+  initFilmstripPreferences(context)
+  registerLanguageService(context)
+  registerPreviewPreferences(context)
   registryAllWebviews(context)
   registerCustomImageEditor(context)
+  context.subscriptions.push(
+    vscode.commands.registerCommand(EXTENSION_COMMANDS.CLEAN_WEBVIEW_IMAGE_CACHE, () =>
+      vscode.commands.executeCommand(EXTENSION_COMMANDS.OPEN_WEBVIEW_IMAGE_VIEWER, {
+        [RESOURCE_CACHE_CLEANUP_ARG]: true
+      })
+    )
+  )
 }
 
 // this method is called when your extension is deactivated
